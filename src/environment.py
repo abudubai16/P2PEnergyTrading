@@ -18,7 +18,7 @@ from datetime import datetime
 '''
     Env-> 
     - time (0-23)
-    - market_price
+    - market_price 
     - cloud_forecast -> generation scaled from cloud cover  - Done
     - battery_soc -> capacity + state of charge
     - double auction logic 
@@ -26,6 +26,9 @@ from datetime import datetime
     - Demand prediction - Done
 '''
 
+class IEXMarket:
+    def __init__(self):
+        pass
 
 # Tested
 class Weather:
