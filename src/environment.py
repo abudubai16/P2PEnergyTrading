@@ -1,7 +1,7 @@
 # RL libraries
 from ray.rllib.env.multi_agent_env import MultiAgentEnv
 import gymnasium as gym
-from gymnasium import spaces
+from gymnasium.spaces import Box, Dict
 
 # Math + ML libraries
 import numpy as np
@@ -11,11 +11,11 @@ import json
 import requests
 from typing import Dict, Tuple
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # https://docs.ray.io/en/latest/rllib/multi-agent-envs.html#rllib-multi-agent-environments-doc
 
-'''
+"""
     Env-> 
     - time (0-23)
     - market_price 
@@ -24,11 +24,21 @@ from datetime import datetime
     - double auction logic 
     - Indian tariffs and other regulatory constraints and logic
     - Demand prediction - Done
-'''
+"""
+
+# Indian regulations and tariffs
+with open(Path("config/regulations.json"), "r") as f:
+    REGULATIONS = json.load(f)
+    DAILY_PROFILE = np.array(REGULATIONS["daily_profile"])
+
+with open(Path("config/agents.json"), "r") as f:
+    AGENTS_CONFIG = json.load(f)
+
 
 class IEXMarket:
     def __init__(self):
         pass
+
 
 # Tested
 class Weather:
@@ -64,7 +74,6 @@ class Weather:
         except Exception:
             return False
 
-
     def _download_year(self, year):
         print(f"[Weather] Downloading NASA POWER data for {self.city} {year}...")
 
@@ -75,7 +84,7 @@ class Weather:
             "latitude": self.lat,
             "start": f"{year}0101",
             "end": f"{year}1231",
-            "format": "JSON"
+            "format": "JSON",
         }
 
         r = requests.get(self.BASE_URL, params=params, timeout=120)
@@ -89,10 +98,7 @@ class Weather:
         # Flatten structure for fast lookup
         processed = {}
         for key in ghi_data.keys():
-            processed[key] = {
-                "ghi": ghi_data[key],
-                "temp": temp_data[key]
-            }
+            processed[key] = {"ghi": ghi_data[key], "temp": temp_data[key]}
 
         # Save to cache
         with open(self._cache_path(year), "w") as f:
@@ -112,7 +118,7 @@ class Weather:
 
         self._loaded_year = year
 
-    def get_weather(self, dt: datetime)->Tuple[float, float]:
+    def get_weather(self, dt: datetime) -> Tuple[float, float]:
         """
         Returns: (temperature °C, GHI W/m²)
         """
@@ -124,15 +130,16 @@ class Weather:
 
         if key not in self._year_data:
             # rare missing hour — fallback to nearest
-            hour_back = dt.replace(hour=max(dt.hour-1, 0))
+            hour_back = dt.replace(hour=max(dt.hour - 1, 0))
             key = hour_back.strftime("%Y%m%d%H")
 
         entry = self._year_data[key]
         return entry["temp"], entry["ghi"]
 
+
 # Tested
 class HouseholdDemand:
-    def __init__(self, num_households: int):
+    def __init__(self):
         self.load_config()
 
         hp = self.DEMAND_CONFIG["household_parameters"]
@@ -141,23 +148,21 @@ class HouseholdDemand:
 
     def load_config(self):
         with open("config/demand_config.json", "r") as f:
-            self.DEMAND_CONFIG = json.load(f)   
+            self.DEMAND_CONFIG = json.load(f)
             self.PROFILE = self.DEMAND_CONFIG["daily_profile"]
 
-    def get_load(self, hour, day_of_week, day_of_year, temp)-> int:
+    def get_load(self, hour, day_of_week, day_of_year, temp) -> int:
         base = self.PROFILE[hour] * self.peak_kw * self.house_scale
 
         # stochastic noise
         noise = np.random.normal(0, self.DEMAND_CONFIG["noise_std"])
         load = base * (1 + noise)
 
-
         # temperature effect
         temperature = 30 if temp is None else temp
         temp_cfg = self.DEMAND_CONFIG["temperature_effect"]
         if temperature > temp_cfg["threshold"]:
             load += temp_cfg["sensitivity"] * (temperature - temp_cfg["threshold"])
-
 
         # appliances
         appliances = self.DEMAND_CONFIG["appliances"]
@@ -167,25 +172,22 @@ class HouseholdDemand:
         if hour in cook["hours"] and np.random.rand() < cook["probability"]:
             load += cook["load_kw"]
 
-
         # AC
         ac = appliances["ac"]
         if hour in ac["hours"] and np.random.rand() < ac["probability"]:
             load += np.random.uniform(*ac["load_kw_range"])
-
 
         # water pump (any hour)
         pump = appliances["pump"]
         if np.random.rand() < pump["probability"]:
             load += pump["load_kw"]
 
-
         # weekend effect
         if day_of_week in [5, 6]:
             load *= self.DEMAND_CONFIG["weekend_multiplier"]
 
-
         return max(load, self.DEMAND_CONFIG["minimum_load"])
+
 
 # Tested
 class Battery:
@@ -270,109 +272,153 @@ class Battery:
         self.soc = np.random.uniform(0.3, 0.8)
 
 
-class P2PMultiAgentEnv(MultiAgentEnv):
-    def __init__(self, config=None):
-        config = config or {}
+class P2PEnergyTrading(MultiAgentEnv):
+    def __init__(self, num_households):
+        super().__init__()
 
-        self.num_agents = config.get("num_agents", 5)
-        self.horizon = config.get("horizon", 24)
-        self.forecast_len = config.get("forecast_len", 6)
+        self.time_delta = (
+            timedelta(hours=1) if AGENTS_CONFIG["use_hr"] else timedelta(minutes=15)
+        )
 
-        self.agent_ids = [f"prosumer_{i}" for i in range(self.num_agents)]
+        self.agents = [f"household_{i}" for i in range(num_households)]
+        self._create_agents()
 
-        # Shared spaces
-        self.observation_space = spaces.Dict({
-            "time": spaces.Box(0, 23, (1,), np.float32),
-            "market_price": spaces.Box(0, 100, (1,), np.float32),
-            "cloud_forecast": spaces.Box(0, 1, (self.forecast_len,), np.float32),
-            "battery_soc": spaces.Box(0, 10, (1,), np.float32),
-            "generation": spaces.Box(0, 10, (1,), np.float32),
-            "demand": spaces.Box(0, 10, (1,), np.float32),
-        })
+        """
+            Action space : 
+                a ~ [q_buy, q_sell, q_charge, q_discharge, p_buy, p_sell]
+            Observation space:
+                o ~ [time, market_price, battery_soc, battery_capacity, forecast_demand, generation_forecast]
+        """
+        self.action_spaces = {
+            agent: self.get_action_space(agent_id)
+            for agent_id, agent in enumerate(self.agents)
+        }
 
-        self.action_space = spaces.Dict({
-            "mode": spaces.Discrete(2),      # store / sell
-            "quantity": spaces.Box(0, 10, (1,), np.float32),
-            "price": spaces.Box(0, 100, (1,), np.float32),
-        })
+        self.observation_spaces = {
+            agent: self.get_observation_space(agent_id)
+            for agent_id, agent in enumerate(self.agents)
+        }
 
-        self.reset()
+    def _create_agents(self):
+        self.weather = Weather(city="Bangalore", lat=12.9719, lon=77.5937)
+        self.market = IEXMarket()
+
+        self.demand_model = [HouseholdDemand() for _ in self.agents]
+        self.batteries = [Battery() for _ in self.agents]
+        self.agent_solar = [
+            np.random.uniform(0, AGENTS_CONFIG["max_solar_generation_kwh"])  # TODO
+            for _ in self.agents
+        ]
+
+    def get_action_space(self, agent_id):
+        return Dict(
+            {
+                # Market transactions
+                "q_buy": Box(
+                    low=np.array([0.0], dtype=np.float32),
+                    high=np.array(
+                        [REGULATIONS["max_transaction_kwh"]], dtype=np.float32
+                    ),
+                    dtype=np.float32,
+                ),
+                "q_sell": Box(
+                    low=np.array([0.0], dtype=np.float32),
+                    high=np.array(
+                        [REGULATIONS["max_transaction_kwh"]], dtype=np.float32
+                    ),
+                    dtype=np.float32,
+                ),
+                # Battery control
+                "q_charge": Box(
+                    low=np.array([0.0], dtype=np.float32),
+                    high=np.array(
+                        [REGULATIONS["battery_power_limit_kwh"]], dtype=np.float32
+                    ),
+                    dtype=np.float32,
+                ),
+                "q_discharge": Box(
+                    low=np.array([0.0], dtype=np.float32),
+                    high=np.array(
+                        [REGULATIONS["battery_power_limit_kwh"]], dtype=np.float32
+                    ),
+                    dtype=np.float32,
+                ),
+                # Market prices
+                "p_buy": Box(
+                    low=np.array([REGULATIONS["price_floor"]], dtype=np.float32),
+                    high=np.array([REGULATIONS["price_cap"]], dtype=np.float32),
+                    dtype=np.float32,
+                ),
+                "p_sell": Box(
+                    low=np.array([REGULATIONS["price_floor"]], dtype=np.float32),
+                    high=np.array([REGULATIONS["price_cap"]], dtype=np.float32),
+                    dtype=np.float32,
+                ),
+            }
+        )
+
+    def get_observation_space(self, agent_id):
+        T = REGULATIONS["time_blocks_per_day"]
+        return Dict(
+            {
+                "time": Box(low=0, high=23, shape=(1,), dtype=np.int32),
+                "market_price": Box(
+                    low=REGULATIONS["price_floor"],
+                    high=REGULATIONS["price_cap"],
+                    shape=(1,),
+                    dtype=np.float32,
+                ),
+                "battery_soc": Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
+                "battery_capacity": Box(
+                    low=0.0,
+                    high=self.batteries[agent_id].capacity_kwh,
+                    shape=(1,),
+                    dtype=np.float32,
+                ),
+                "forecast_demand": Box(
+                    low=np.zeros(T, dtype=np.float32),
+                    high=DAILY_PROFILE,
+                    shape=(T,),
+                    dtype=np.float32,
+                ),
+                "generation": Box(
+                    low=np.zeros(T, dtype=np.float32),
+                    high=np.ones(T, dtype=np.float32) * 2000,
+                    shape=(T,),
+                    dtype=np.float32,
+                ),
+            }
+        )
 
     def reset(self, *, seed=None, options=None):
-        self.t = 0
+        observations = {}
 
-        self.battery = {
-            aid: np.random.uniform(2, 8) for aid in self.agent_ids
-        }
+        t = 0
+        self.date = datetime(
+            2024, 1, 1, t
+        )  # fixed date for consistent weather patterns
+        market_price = self.market.get_price(t)
+        demand_forecast = DAILY_PROFILE
+        _, ghi = self.weather.get_weather(self.date)
+        generation_forecast = ghi * self.agent_solar[i]
 
-        obs = {
-            aid: self._get_obs(aid)
-            for aid in self.agent_ids
-        }
+        for i, agent in enumerate(self.agents):
+            observations[agent] = {
+                "time": np.array([t], dtype=np.int32),
+                "market_price": np.array([market_price], dtype=np.float32),
+                "battery_soc": np.array([self.batteries[i].soc], dtype=np.float32),
+                "battery_capacity": np.array(
+                    [self.batteries[i].capacity_kwh], dtype=np.float32
+                ),
+                "forecast_demand": demand_forecast * self.demand_model[i].house_scale,
+                "generation_forecast": generation_forecast * self.agent_solar[i],
+            }
 
-        return obs, {}
-    
-    def _get_obs(self, agent_id):
-        return {
-            "time": np.array([self.t % 24], np.float32),
-            "market_price": np.array([self._current_market_price()], np.float32),
-            "cloud_forecast": self._cloud_forecast(agent_id),
-            "battery_soc": np.array([self.battery[agent_id]], np.float32),
-            "generation": np.array([np.random.uniform(0, 5)], np.float32),
-            "demand": np.array([np.random.uniform(0, 5)], np.float32),
-        }
-    
-    def step(self, action_dict):
-        """
-        action_dict = {
-            agent_id: {mode, quantity, price}
-        }
-        """
+        return observations, {}
 
-        rewards = {}
-        obs = {}
-        terminateds = {}
-        truncateds = {}
-        infos = {}
-
-        # ---------- MARKET CLEARING ----------
-        market_price = self._clear_market(action_dict)
-
-        for aid, action in action_dict.items():
-            mode = action["mode"]
-            qty = float(action["quantity"][0])
-            price = float(action["price"][0])
-
-            reward = 0.0
-
-            if mode == 0:  # store
-                self.battery[aid] += qty
-                reward -= 0.05 * qty
-
-            else:  # sell
-                if price <= market_price:
-                    reward += qty * market_price
-                    self.battery[aid] -= qty
-                else:
-                    reward -= 0.1  # rejected bid penalty
-
-            rewards[aid] = reward
-            obs[aid] = self._get_obs(aid)
-            terminateds[aid] = False
-            truncateds[aid] = False
-            infos[aid] = {}
-
-        self.t += 1
-
-        terminateds["__all__"] = self.t >= self.horizon
-        truncateds["__all__"] = False
-
-        return obs, rewards, terminateds, truncateds, infos
-
-    def _clear_market(self, action_dict):
-        sell_prices = [
-            float(a["price"][0])
-            for a in action_dict.values()
-            if a["mode"] == 1
-        ]
-        return np.mean(sell_prices) if sell_prices else 30.0
+    def step(self):  # TODO
+        self.date += self.time_delta
+        t = self.date.hour
+        market_price = self.market.get_price(self.date)
+        demand_forecast = DAILY_PROFILE
+        _, ghi = self.weather.get_weather(self.date)

@@ -1,0 +1,7 @@
+{
+    "max_solar_generation_kwh": 10,
+    "use_hr" : true,
+    "lr" : 1e-4,
+    "generation_hidden_size" : 64,
+    "demand_hidden_size" : 64
+}
