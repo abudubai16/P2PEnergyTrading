@@ -1,6 +1,8 @@
 # RLlib modules
 from ray.rllib.core.rl_module.torch.torch_rl_module import TorchRLModule
+from ray.rllib.utils.annotations import override
 from ray.rllib.core import Columns
+from ray.rllib.core.rl_module.apis import ValueFunctionAPI
 
 # pytorch modules
 import torch
@@ -8,24 +10,28 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class P2PTradingPolicy(TorchRLModule):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.generation_hidden_size = config["generation_hidden_size"]
-        self.demand_hidden_size = config["demand_hidden_size"]
+class P2PTradingPolicy(TorchRLModule, ValueFunctionAPI):
+    """
+    Custom RLModule for the P2P energy trading environment.
 
+    Config options:
+    - demand_hidden_size : int
+    - generation_hidden_size : int
+    - time_blocks : int (the number of time blocks per day)
+    """
+
+    @override(TorchRLModule)
     def setup(self):
-        time_blocks = self.observation_space["forecast_demand"].shape[0]
+        time_blocks = self.model_config["time_blocks"]
         self.demand_layer = nn.LSTM(
             input_size=time_blocks,
-            hidden_size=self.demand_hidden_size,
+            hidden_size=self.model_config["demand_hidden_size"],
             num_layers=2,
             batch_first=True,
         )
         self.generation_layer = nn.LSTM(
             input_size=time_blocks,
-            hidden_size=self.generation_hidden_size,
+            hidden_size=self.model_config["generation_hidden_size"],
             num_layers=2,
             batch_first=True,
         )
@@ -38,13 +44,7 @@ class P2PTradingPolicy(TorchRLModule):
         )
         self.value_layer = nn.Sequential(nn.Linear(64, 64), nn.ReLU(), nn.Linear(64, 1))
 
-        self.optimizer = self.configure_optimizers()
-
-    def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=self.config["lr"])
-
-    def _forward(self, batch, **kwargs):
-        # TODO : check if the values returned will be a numpy array or tensor
+    def _compute_embeddings(self, batch):
         obs = batch.get(Columns.OBS, batch)
 
         input1 = torch.cat(
@@ -67,7 +67,25 @@ class P2PTradingPolicy(TorchRLModule):
         embedding = torch.cat(
             (embedding1, demand_embedding, generation_embedding), dim=-1
         )
+        return embedding
 
+    @override(TorchRLModule)
+    def _forward(self, batch, **kwargs):
+        # TODO : check if the values returned will be a numpy array or tensor
+        embedding = self._compute_embeddings(batch)
         logits = self.decoder_layer(embedding)
-        value = self.value_layer(embedding)
-        return {Columns.ACTIONS: logits, Columns.VF_PREDS: value.squeeze(-1)}
+
+        return {Columns.ACTION_DIST_INPUTS: logits}
+
+    @override(TorchRLModule)
+    def _forward_train(self, batch, **kwargs):
+        embeddings = self._compute_embeddings(batch)
+        logits = self.decoder_layer(embeddings)
+        return {Columns.ACTION_DIST_INPUTS: logits, Columns.EMBEDDINGS: embeddings}
+
+    @override(ValueFunctionAPI)
+    def compute_values(self, batch, embeddings=None):
+        if embeddings is None:
+            embeddings = self._compute_embeddings(batch)
+        value = self.value_layer(embeddings)
+        return value

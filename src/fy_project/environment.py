@@ -9,7 +9,7 @@ import numpy as np
 # Frist party libraries
 import json
 import requests
-from typing import Dict, Tuple
+from typing import Tuple
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -27,12 +27,11 @@ from datetime import datetime, timedelta
 """
 
 # Indian regulations and tariffs
-with open(Path("config/regulations.json"), "r") as f:
+with open(Path("src/config/regulations.json"), "r") as f:
     REGULATIONS = json.load(f)
-    DAILY_PROFILE = np.array(REGULATIONS["daily_profile"])
-
-with open(Path("config/agents.json"), "r") as f:
-    AGENTS_CONFIG = json.load(f)
+    BATTERY_CFG = REGULATIONS["battery_config"]
+    DEMAND_CFG = REGULATIONS["demand_config"]
+    DAILY_PROFILE = np.array(DEMAND_CFG["daily_profile"])
 
 
 class IEXMarket:
@@ -44,7 +43,7 @@ class IEXMarket:
 class Weather:
     BASE_URL = "https://power.larc.nasa.gov/api/temporal/hourly/point"
 
-    def __init__(self, city, lat, lon, cache_dir="weather_cache"):
+    def __init__(self, city, lat, lon, cache_dir="src/weather_cache"):
         self.city = city.replace(" ", "_")
         self.lat = lat
         self.lon = lon
@@ -140,32 +139,26 @@ class Weather:
 # Tested
 class HouseholdDemand:
     def __init__(self):
-        self.load_config()
-
-        hp = self.DEMAND_CONFIG["household_parameters"]
+        self.PROFILE = DEMAND_CFG["daily_profile"]
+        hp = DEMAND_CFG["household_parameters"]
         self.house_scale = np.random.uniform(*hp["scale_range"])
         self.peak_kw = np.random.uniform(*hp["peak_kw_range"])
-
-    def load_config(self):
-        with open("config/demand_config.json", "r") as f:
-            self.DEMAND_CONFIG = json.load(f)
-            self.PROFILE = self.DEMAND_CONFIG["daily_profile"]
 
     def get_load(self, hour, day_of_week, day_of_year, temp) -> int:
         base = self.PROFILE[hour] * self.peak_kw * self.house_scale
 
         # stochastic noise
-        noise = np.random.normal(0, self.DEMAND_CONFIG["noise_std"])
+        noise = np.random.normal(0, DEMAND_CFG["noise_std"])
         load = base * (1 + noise)
 
         # temperature effect
         temperature = 30 if temp is None else temp
-        temp_cfg = self.DEMAND_CONFIG["temperature_effect"]
+        temp_cfg = DEMAND_CFG["temperature_effect"]
         if temperature > temp_cfg["threshold"]:
             load += temp_cfg["sensitivity"] * (temperature - temp_cfg["threshold"])
 
         # appliances
-        appliances = self.DEMAND_CONFIG["appliances"]
+        appliances = DEMAND_CFG["appliances"]
 
         # cooking
         cook = appliances["cooking"]
@@ -184,28 +177,24 @@ class HouseholdDemand:
 
         # weekend effect
         if day_of_week in [5, 6]:
-            load *= self.DEMAND_CONFIG["weekend_multiplier"]
+            load *= DEMAND_CFG["weekend_multiplier"]
 
-        return max(load, self.DEMAND_CONFIG["minimum_load"])
+        return max(load, DEMAND_CFG["minimum_load"])
 
 
 # Tested
 class Battery:
-    def __init__(self, config_path="battery_config.json", timestep_hours=1.0):
-
-        with open(f"config/{config_path}", "r") as f:
-            cfg = json.load(f)
-
+    def __init__(self, timestep_hours=1.0):
         self.dt = timestep_hours
-        self.efficiency = cfg["efficiency"]
+        self.efficiency = BATTERY_CFG["efficiency"]
 
         # -------- Randomized physical parameters --------
-        self.capacity_kwh = self._sample(cfg["capacity_kwh"])
-        self.max_charge_kw = self._sample(cfg["max_charge_power_kw"])
-        self.max_discharge_kw = self._sample(cfg["max_discharge_power_kw"])
+        self.capacity_kwh = self._sample(BATTERY_CFG["capacity_kwh"])
+        self.max_charge_kw = self._sample(BATTERY_CFG["max_charge_power_kw"])
+        self.max_discharge_kw = self._sample(BATTERY_CFG["max_discharge_power_kw"])
 
         # -------- Initial State of Charge --------
-        soc_low, soc_high = cfg["initial_soc_range"]
+        soc_low, soc_high = BATTERY_CFG["initial_soc_range"]
         self.soc = np.random.uniform(soc_low, soc_high)
 
     def _sample(self, dist):
@@ -273,14 +262,22 @@ class Battery:
 
 
 class P2PEnergyTrading(MultiAgentEnv):
-    def __init__(self, num_households):
+    """
+    Custom env for P2P energy trading among households.
+
+    config file expects:
+    - num_households: int
+    """
+
+    def __init__(self, *args, **kwargs):
         super().__init__()
 
         self.time_delta = (
-            timedelta(hours=1) if AGENTS_CONFIG["use_hr"] else timedelta(minutes=15)
+            timedelta(hours=1) if kwargs["use_hr"] else timedelta(minutes=15)
         )
+        self.max_solar_gen = kwargs.get("max_solar_generation_kwh")
 
-        self.agents = [f"household_{i}" for i in range(num_households)]
+        self.agents = [f"household_{i}" for i in range(kwargs["num_households"])]
         self._create_agents()
 
         """
@@ -306,8 +303,7 @@ class P2PEnergyTrading(MultiAgentEnv):
         self.demand_model = [HouseholdDemand() for _ in self.agents]
         self.batteries = [Battery() for _ in self.agents]
         self.agent_solar = [
-            np.random.uniform(0, AGENTS_CONFIG["max_solar_generation_kwh"])  # TODO
-            for _ in self.agents
+            np.random.uniform(0, self.max_solar_gen) for _ in self.agents  # TODO
         ]
 
     def get_action_space(self, agent_id):
@@ -332,14 +328,14 @@ class P2PEnergyTrading(MultiAgentEnv):
                 "q_charge": Box(
                     low=np.array([0.0], dtype=np.float32),
                     high=np.array(
-                        [REGULATIONS["battery_power_limit_kwh"]], dtype=np.float32
+                        [BATTERY_CFG["max_charge_power_kw"]["max"]], dtype=np.float32
                     ),
                     dtype=np.float32,
                 ),
                 "q_discharge": Box(
                     low=np.array([0.0], dtype=np.float32),
                     high=np.array(
-                        [REGULATIONS["battery_power_limit_kwh"]], dtype=np.float32
+                        [BATTERY_CFG["max_discharge_power_kw"]["max"]], dtype=np.float32
                     ),
                     dtype=np.float32,
                 ),
