@@ -8,8 +8,8 @@ from ray.rllib.examples.utils import (
 )
 from ray.tune.registry import get_trainable_cls, register_env
 
-from .environment import P2PEnergyTrading
-from .agent import P2PTradingPolicy
+from fy_project.env import P2PEnergyTrading
+from fy_project.agent import P2PTradingPolicy
 
 import json
 from pathlib import Path

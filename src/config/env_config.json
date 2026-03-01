@@ -4,5 +4,6 @@
     "lr" : 1e-4,
     "generation_hidden_size" : 64,
     "demand_hidden_size" : 64,
-    "num_households" : 1
+    "num_households" : 1,
+    "episode_length" : 30
 }
