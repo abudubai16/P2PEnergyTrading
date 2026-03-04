@@ -1,20 +1,30 @@
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta
 from fy_project.paths import IEX_DATA_DIR
 
 
 class IEXMarket:
     def __init__(self):
+        self.TIME_DEL = timedelta(hours=1)
         print(IEX_DATA_DIR)
+        self._buffered_row = None
         self.reset()
 
     def get_price(self, dt: datetime) -> float:
         try:
-            val = next(self.reader)
+            if self._buffered_row is not None:
+                val = self._buffered_row
+                self._buffered_row = None
+            else:
+                val = next(self.reader)
         except StopIteration:
             self.reset()
             print("\n\n Hit end of file, looping back to start \n\n")
-            val = next(self.reader)
+            if self._buffered_row is not None:
+                val = self._buffered_row
+                self._buffered_row = None
+            else:
+                val = next(self.reader)
 
         date_str = val["datetime"]
         if date_str != dt.strftime("%Y-%m-%d %H:%M:%S"):
@@ -24,5 +34,24 @@ class IEXMarket:
 
         return float(val["price"]) / 1000 if "price" in val else 10.0
 
-    def reset(self):
+    def get_day_prices(self, dt: datetime) -> list[float]:
+        prices = []
+        for _ in range(24):
+            prices.append(self.get_price(dt))
+            dt += self.TIME_DEL
+        return prices
+
+    def reset(self, start_date=datetime(2024, 1, 1, 0)):
         self.reader = csv.DictReader(open(IEX_DATA_DIR, "r"))
+        self._buffered_row = None
+
+        # Skip to start_date, but keep that exact row buffered
+        while True:
+            try:
+                val = next(self.reader)
+                date_str = val["datetime"]
+                if date_str == start_date.strftime("%Y-%m-%d %H:%M:%S"):
+                    self._buffered_row = val  # one behind behavior for next read
+                    break
+            except StopIteration:
+                raise ValueError(f"start_date {start_date} not found in IEX data")

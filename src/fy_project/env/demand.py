@@ -20,7 +20,7 @@ class HouseholdDemand:
         self.house_scale = np.random.uniform(*hp["scale_range"])
         self.peak_kw = np.random.uniform(*hp["peak_kw_range"])
 
-    def get_load(self, hour, day_of_week, day_of_year, temp) -> int:
+    def get_load(self, hour, day_of_week, day_of_year, temp=None) -> int:
         base = self.PROFILE[hour] * self.peak_kw * self.house_scale
 
         # stochastic noise
@@ -56,3 +56,8 @@ class HouseholdDemand:
             load *= DEMAND_CFG["weekend_multiplier"]
 
         return max(load, DEMAND_CFG["minimum_load"])
+
+    def get_daily_profile(self, day_of_week, day_of_year, temp=None):
+        return [
+            self.get_load(hour, day_of_week, day_of_year, temp) for hour in range(24)
+        ]

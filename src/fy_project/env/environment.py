@@ -49,12 +49,13 @@ class P2PEnergyTrading(MultiAgentEnv):
 
     def __init__(self, *args, **kwargs):
         super().__init__()
-        self.SOLAR_CONST = 1 / 20000
+        self.SOLAR_CONST: float = 1 / 20000
+        self.max_solar_gen: float = kwargs.get("max_solar_generation_kwh")
+        self.EPISODE_LEN: int = kwargs.get("episode_length", 30)
+
         self.TIME_DEL = timedelta(days=1)
-        self.max_solar_gen = kwargs.get("max_solar_generation_kwh")
         self.agents = [f"household_{i}" for i in range(kwargs["num_households"])]
         self._create_agents()
-        self.EPISODE_LEN = kwargs.get("episode_length", 30)
 
         """
             Action space : 
@@ -79,51 +80,17 @@ class P2PEnergyTrading(MultiAgentEnv):
         self.demand_model = [HouseholdDemand() for _ in self.agents]
         self.batteries = [Battery() for _ in self.agents]
         self.agent_solar = [
-            np.random.uniform(0, self.max_solar_gen) for _ in self.agents  # TODO
+            np.random.uniform(0, self.max_solar_gen) for _ in self.agents
         ]
 
     def get_action_space(self, agent_id):
+        T = REGULATIONS["time_blocks_per_day"]
         return Dict(
             {
-                # Market transactions
                 "q_buy": Box(
-                    low=np.array([0.0], dtype=np.float32),
-                    high=np.array(
-                        [REGULATIONS["max_transaction_kwh"]], dtype=np.float32
-                    ),
-                    dtype=np.float32,
-                ),
-                "q_sell": Box(
-                    low=np.array([0.0], dtype=np.float32),
-                    high=np.array(
-                        [REGULATIONS["max_transaction_kwh"]], dtype=np.float32
-                    ),
-                    dtype=np.float32,
-                ),
-                # Battery control
-                "q_charge": Box(
-                    low=np.array([0.0], dtype=np.float32),
-                    high=np.array(
-                        [BATTERY_CFG["max_charge_power_kw"]["max"]], dtype=np.float32
-                    ),
-                    dtype=np.float32,
-                ),
-                "q_discharge": Box(
-                    low=np.array([0.0], dtype=np.float32),
-                    high=np.array(
-                        [BATTERY_CFG["max_discharge_power_kw"]["max"]], dtype=np.float32
-                    ),
-                    dtype=np.float32,
-                ),
-                # Market prices
-                "p_buy": Box(
-                    low=np.array([REGULATIONS["price_floor"]], dtype=np.float32),
-                    high=np.array([REGULATIONS["price_cap"]], dtype=np.float32),
-                    dtype=np.float32,
-                ),
-                "p_sell": Box(
-                    low=np.array([REGULATIONS["price_floor"]], dtype=np.float32),
-                    high=np.array([REGULATIONS["price_cap"]], dtype=np.float32),
+                    low=-np.ones(shape=T) - 1,
+                    high=+np.ones(shape=T) + 1,
+                    shape=(T,),
                     dtype=np.float32,
                 ),
             }
@@ -133,10 +100,9 @@ class P2PEnergyTrading(MultiAgentEnv):
         T = REGULATIONS["time_blocks_per_day"]
         return Dict(
             {
-                # "time": Box(low=0, high=23, shape=(1,), dtype=np.int32),
                 "market_price": Box(
                     low=np.zeros(T, dtype=np.float32),
-                    high=np.ones(T, dtype=np.float32) + 1,
+                    high=np.ones(T, dtype=np.float32),
                     shape=(T,),
                     dtype=np.float32,
                 ),
@@ -149,7 +115,7 @@ class P2PEnergyTrading(MultiAgentEnv):
                 ),
                 "forecast_demand": Box(
                     low=np.zeros(T, dtype=np.float32),
-                    high=DAILY_PROFILE + 1,
+                    high=DAILY_PROFILE,
                     shape=(T,),
                     dtype=np.float32,
                 ),
@@ -163,83 +129,149 @@ class P2PEnergyTrading(MultiAgentEnv):
         )
 
     def reset(self, *, seed=None, options=None):
-        observations = {}
+        """
+        Observations:
+        at T-1: market_price
+        at T: battery_soc, battery_capacity, forecast_demand
+        at T+1: generation_forecast
+        """
+        obs = {}
 
-        self.date = datetime(2024, 1, 1, 0)
-        self.market.reset()
+        day_offset = np.random.randint(1, 701)
+        self.start_date = datetime(2024, 1, 1) + timedelta(days=day_offset)
+        self.date = self.start_date
+        self.market.reset(start_date=self.date - timedelta(days=1))
 
-        market_price = self.market.get_price(self.date)
-        generation_forecast = (
-            np.array(self.weather.get_day_ghi(self.date), dtype=np.float32)
+        print(self.date)
+
+        # get prev days market price and generation forecast for obs
+        self.prev_market_price = self.market.get_day_prices(
+            self.date - timedelta(days=1)
+        )
+        self.curr_market_price = self.market.get_day_prices(self.date)
+
+        # Next days generation forecast based on cloud cover
+        self.generation_forecast = (
+            np.array(
+                self.weather.get_day_ghi(self.date + timedelta(days=1)),
+                dtype=np.float32,
+            )
             * self.SOLAR_CONST
         )
 
         for i, agent in enumerate(self.agents):
-            observations[agent] = {
-                # "time": np.array([0], dtype=np.int32),
-                # "market_price": np.array([market_price], dtype=np.float32),
+            obs[agent] = {
+                "market_price": np.array(self.prev_market_price, dtype=np.float32) / 11,
                 "battery_soc": np.array([self.batteries[i].soc], dtype=np.float32),
                 "battery_capacity": np.array(
                     [self.batteries[i].capacity_kwh], dtype=np.float32
                 ),
-                "forecast_demand": DAILY_PROFILE * self.demand_model[i].house_scale,
-                "generation": generation_forecast * self.agent_solar[i],
+                "forecast_demand": DAILY_PROFILE * self.demand_model[i].house_scale / 2,
+                "generation": self.generation_forecast * self.agent_solar[i],
             }
 
-        return observations, {}
+        return obs, {}
 
-    def step(self, action_dist):  # TODO
+    def step(self, action_dist):
         """
         Each step is one day
         One episode is 30 days (configurable)
-
         """
-
         # Check if action is valid for each agent
-        for agent in self.agents:
-            if self.action_spaces[agent].contains(action_dist[agent]):
-                raise TypeError("Invalid action format for agent {}".format(agent))
+        self._action_check_validity(action_dist)
 
-        # Apply actions to update battery states and market interactions
-        # [q_buy, q_sell, q_charge, q_discharge, p_buy, p_sell]
-        for agent in self.agents:
-
-            pass
+        # Advance the time, t=T+1
+        self.date += self.TIME_DEL
 
         # Advance time and get observations
-        obs = {}
-        self.date += self.TIME_DEL
-        t = self.date.hour
+        obs = self._get_obs()
 
-        market_price = self.market.get_price(self.date)
-        generation_forecast = (
-            np.array(self.weather.get_day_ghi(self.date), dtype=np.float32)
+        # [q_buy, q_sell, q_charge, q_discharge, p_buy, p_sell]
+        rewards = self._compute_rewards(action_dist)
+
+        # Check if the year span has been exceeded
+        terminateds = {"__all__": (self.date - self.start_date).days > self.EPISODE_LEN}
+
+        return obs, rewards, terminateds, {}, {}
+
+    def _get_obs(self):
+        """
+        Observations:
+        at T-1: market_price
+        at T: battery_soc, battery_capacity, forecast_demand
+        at T+1: generation_forecast
+        """
+
+        obs = {}
+        # get prev days market price and generation forecast for obs
+        self.prev_market_price = self.curr_market_price
+        self.curr_market_price = self.market.get_day_prices(self.date)
+        # Next days generation forecast based on cloud cover
+        self.generation_forecast = (
+            np.array(
+                self.weather.get_day_ghi(self.date + timedelta(days=1)),
+                dtype=np.float32,
+            )
             * self.SOLAR_CONST
         )
 
-        for agent in self.agents:
+        for i, agent in enumerate(self.agents):
             obs[agent] = {
-                "time": np.array([t], dtype=np.int32),
-                "market_price": np.array([market_price], dtype=np.float32),
-                "battery_soc": np.array([self.batteries[agent].soc], dtype=np.float32),
+                "market_price": np.array(self.prev_market_price, dtype=np.float32) / 11,
+                "battery_soc": np.array([self.batteries[i].soc], dtype=np.float32),
                 "battery_capacity": np.array(
-                    [self.batteries[agent].capacity_kwh], dtype=np.float32
+                    [self.batteries[i].capacity_kwh], dtype=np.float32
                 ),
-                "forecast_demand": DAILY_PROFILE * self.demand_model[agent].house_scale,
-                "generation": generation_forecast * self.agent_solar[agent],
+                "forecast_demand": DAILY_PROFILE * self.demand_model[i].house_scale / 2,
+                "generation": self.generation_forecast * self.agent_solar[i],
             }
 
-        # Check if the year span has been exceeded
-        terminateds = {"__all__": self.date.year >= 2026}
+        return obs
 
-        # Compute rewards based on actions and market interactions
-        rewards = {}
+    def _action_check_validity(self, action_dist):
         for agent in self.agents:
-            action = action_dist[agent]
-            # Placeholder reward logic - to be replaced with actual market and cost calculations
-            rewards[agent] = -(
-                action["q_buy"].item() * action["p_buy"].item()
-                - action["q_sell"].item() * action["p_sell"].item()
+            if not self.action_spaces[agent].contains(action_dist[agent]):
+                print(f"Invalid action for agent {agent}: {action_dist[agent]}")
+                raise TypeError(f"Invalid action format for agent {agent}")
+
+    def _compute_rewards(self, action_dist: Dict):
+        """
+        Rewards:
+        at T = 0 we have prev_market_price from t-1, generation_forecast for t+1, and demand forecast for t
+        """
+        rewards = {}
+        prev_day = self.date - timedelta(days=2)
+
+        # Get the prev days generation for reward calculation
+        generation_forecast = (
+            np.array(
+                self.weather.get_day_ghi(self.date),
+                dtype=np.float32,
+            )
+            * self.SOLAR_CONST
+        )
+
+        for i, agent in enumerate(self.agents):
+            q_buy: np.ndarray = action_dist[agent]["q_buy"]
+            agent_demand = self.demand_model[i].get_daily_profile(
+                day_of_week=prev_day.weekday(), day_of_year=prev_day.day
             )
 
-        return obs, rewards, terminateds, {}, {}
+            # From load balancing equation: generation + q_buy = demand + q_charge_battery
+            charge_battery = (
+                generation_forecast * self.agent_solar[i] - agent_demand + q_buy
+            )
+            net_energy = []
+            for t in range(REGULATIONS["time_blocks_per_day"]):
+                net_energy.append(
+                    self.batteries[i].charge(charge_battery[t])
+                    if charge_battery[t] > 0
+                    else -self.batteries[i].discharge(-charge_battery[t])
+                )
+
+            updated_q_buy = q_buy - np.array(net_energy)
+            cost = self.curr_market_price * updated_q_buy
+
+            rewards[agent] = -cost
+
+        return rewards
