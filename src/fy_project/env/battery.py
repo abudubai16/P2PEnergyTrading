@@ -51,7 +51,7 @@ class Battery:
         self.soc += stored_energy / self.capacity_kwh
         self.soc = min(self.soc, 1.0)
 
-        return energy  # energy drawn from grid/PV
+        return requested_energy_kwh - energy  # energy drawn from grid/PV
 
     # --------------------------------------------------
     # Discharging
@@ -75,7 +75,7 @@ class Battery:
         self.soc -= energy / self.capacity_kwh
         self.soc = max(self.soc, 0.0)
 
-        return delivered_energy
+        return requested_energy_kwh - delivered_energy
 
     # --------------------------------------------------
     # Utility

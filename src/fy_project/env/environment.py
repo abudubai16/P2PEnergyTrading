@@ -37,6 +37,7 @@ with open(Path.joinpath(CONFIG_DIR, "regulations.json"), "r") as f:
     DEMAND_CFG = REGULATIONS["demand_config"]
     BATTERY_CFG = REGULATIONS["battery_config"]
     DAILY_PROFILE = np.array(DEMAND_CFG["daily_profile"], dtype=np.float32)
+    RL_CONST = REGULATIONS["rl_const"]
 
 
 class P2PEnergyTrading(MultiAgentEnv):
@@ -254,24 +255,41 @@ class P2PEnergyTrading(MultiAgentEnv):
         for i, agent in enumerate(self.agents):
             q_buy: np.ndarray = action_dist[agent]["q_buy"]
             agent_demand = self.demand_model[i].get_daily_profile(
-                day_of_week=prev_day.weekday(), day_of_year=prev_day.day
+                day_of_week=prev_day.weekday(),
+                day_of_year=prev_day.timetuple().tm_yday,
             )
 
             # From load balancing equation: generation + q_buy = demand + q_charge_battery
-            charge_battery = (
+            net_before_battery = (
                 generation_forecast * self.agent_solar[i] - agent_demand + q_buy
             )
-            net_energy = []
+
+            # Charge the batteries and calculate the remaining leftover energy that needs to be bought/sold from the grid
+            battery_flow = []
             for t in range(REGULATIONS["time_blocks_per_day"]):
-                net_energy.append(
-                    self.batteries[i].charge(charge_battery[t])
-                    if charge_battery[t] > 0
-                    else -self.batteries[i].discharge(-charge_battery[t])
+                battery_flow.append(
+                    self.batteries[i].charge(net_before_battery[t])
+                    if net_before_battery[t] > 0
+                    else -self.batteries[i].discharge(-net_before_battery[t])
                 )
 
-            updated_q_buy = q_buy - np.array(net_energy)
-            cost = self.curr_market_price * updated_q_buy
+            battery_flow = np.array(battery_flow)
+            Et = (
+                net_before_battery - battery_flow
+            )  # Amnt to buy/sell from grid after battery flow
 
-            rewards[agent] = -cost
+            C_dam = np.sum(self.curr_market_price * q_buy)
+            C_imbalance = np.sum(
+                self.curr_market_price
+                * np.where(
+                    Et < 0,
+                    -Et * 1.5,  # buying deficit (Et negative)
+                    -Et * 0.8,  # selling surplus
+                )
+            )
+            R_economic = -C_dam - C_imbalance
+
+            R_deviation = -RL_CONST["imbalance_penalty_rate"] * np.sum(np.abs(Et))
+            rewards[agent] = R_economic + R_deviation
 
         return rewards

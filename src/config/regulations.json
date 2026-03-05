@@ -58,5 +58,8 @@
         },
         "efficiency": 0.92,
         "initial_soc_range": [0.3, 0.8]
+    },
+    "rl_const" : {
+        "imbalance_penalty_rate" : 0.4289621
     }
 }
