@@ -9,6 +9,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from typing import Dict
+
 
 class P2PTradingPolicy(TorchRLModule, ValueFunctionAPI):
     """
@@ -17,57 +19,91 @@ class P2PTradingPolicy(TorchRLModule, ValueFunctionAPI):
     Config options:
     - demand_hidden_size : int
     - generation_hidden_size : int
+    - market_price_hidden_size: int
     - time_blocks : int (the number of time blocks per day)
     """
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
     @override(TorchRLModule)
     def setup(self):
-        time_blocks = self.model_config["time_blocks"]
+        """
+        Observations:
+        at T-1: market_price
+        at T: battery_soc, battery_capacity, forecast_demand
+        at T+1: generation_forecast
+        """
+        self.time_blocks: int = self.model_config.get("time_blocks")
         self.demand_layer = nn.LSTM(
-            input_size=time_blocks,
-            hidden_size=self.model_config["demand_hidden_size"],
+            input_size=self.time_blocks,
+            hidden_size=self.model_config.get("demand_hidden_size"),
             num_layers=2,
             batch_first=True,
         )
         self.generation_layer = nn.LSTM(
-            input_size=time_blocks,
-            hidden_size=self.model_config["generation_hidden_size"],
+            input_size=self.time_blocks,
+            hidden_size=self.model_config.get("generation_hidden_size"),
+            num_layers=2,
+            batch_first=True,
+        )
+        self.market_price_layer = nn.LSTM(
+            input_size=self.time_blocks,
+            hidden_size=self.model_config.get("market_price_hidden_size"),
             num_layers=2,
             batch_first=True,
         )
         self.encoder_layer = nn.Sequential(
-            nn.Linear(4, 64), nn.ReLU(), nn.Linear(64, 64)
+            nn.Linear(2, 64), nn.ReLU(), nn.Linear(64, 64)
         )
 
-        self.decoder_layer = nn.Sequential(
-            nn.Linear(64, 64), nn.ReLU(), nn.Linear(64, 6)
+        decoder_input_size = (
+            self.model_config.get("demand_hidden_size")
+            + self.model_config.get("generation_hidden_size")
+            + self.model_config.get("market_price_hidden_size")
+            + 64
         )
-        self.value_layer = nn.Sequential(nn.Linear(64, 64), nn.ReLU(), nn.Linear(64, 1))
+        self.decoder_layer = nn.Sequential(
+            nn.Linear(decoder_input_size, 64), nn.ReLU(), nn.Linear(64, 24)
+        )
+        self.value_layer = nn.Sequential(
+            nn.Linear(decoder_input_size, 64), nn.ReLU(), nn.Linear(64, 1)
+        )
 
     def _compute_embeddings(self, batch):
-        obs = batch.get(Columns.OBS, batch)
+        obs: Dict[str, torch.Tensor] = batch.get(Columns.OBS, batch)
 
-        input1 = torch.cat(
+        scalers = torch.cat(
             (
-                obs["time"],
-                obs["market_price"],
                 obs["battery_soc"],
                 obs["battery_capacity"],
-            )
+            ),
+            dim=-1,
         )
-        embedding1 = self.encoder_layer(input1)
-        demand_embedding = self.demand_layer(obs["forecast_demand"].unsqueeze(-1))[1][
-            0
-        ][-1]
-
-        generation_embedding = self.generation_layer(
-            obs["forecast_generation"].unsqueeze(-1)
-        )[1][0][-1]
-
-        embedding = torch.cat(
-            (embedding1, demand_embedding, generation_embedding), dim=-1
+        scaler_embeds = self.encoder_layer(scalers)
+        demand_embeds = self._return_last_timestep(
+            self.demand_layer, obs["forecast_demand"]
         )
-        return embedding
+        market_price_embeds = self._return_last_timestep(
+            self.market_price_layer, obs["market_price"]
+        )
+        generation_embeds = self._return_last_timestep(
+            self.generation_layer, obs["generation"]
+        )
+
+        embeds = torch.cat(
+            (
+                scaler_embeds,
+                demand_embeds,
+                market_price_embeds,
+                generation_embeds,
+            ),
+            dim=-1,
+        )
+        return embeds
+
+    def _return_last_timestep(self, layer: nn.LSTM, obs: torch.Tensor) -> torch.Tensor:
+        return layer(obs)[1][0][-1].unsqueeze(0)
 
     @override(TorchRLModule)
     def _forward(self, batch, **kwargs):
@@ -80,8 +116,11 @@ class P2PTradingPolicy(TorchRLModule, ValueFunctionAPI):
     @override(TorchRLModule)
     def _forward_train(self, batch, **kwargs):
         embeddings = self._compute_embeddings(batch)
-        logits = self.decoder_layer(embeddings)
-        return {Columns.ACTION_DIST_INPUTS: logits, Columns.EMBEDDINGS: embeddings}
+        logits: torch.Tensor = self.decoder_layer(embeddings)
+        return {
+            Columns.ACTION_DIST_INPUTS: logits,
+            Columns.EMBEDDINGS: embeddings,
+        }
 
     @override(ValueFunctionAPI)
     def compute_values(self, batch, embeddings=None):

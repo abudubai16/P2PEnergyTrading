@@ -178,6 +178,8 @@ class P2PEnergyTrading(MultiAgentEnv):
         Each step is one day
         One episode is 30 days (configurable)
         """
+        self.info = {}
+
         # Check if action is valid for each agent
         self._action_check_validity(action_dist)
 
@@ -193,7 +195,7 @@ class P2PEnergyTrading(MultiAgentEnv):
         # Check if the year span has been exceeded
         terminateds = {"__all__": (self.date - self.start_date).days > self.EPISODE_LEN}
 
-        return obs, rewards, terminateds, {}, {}
+        return obs, rewards, terminateds, self.info, {}
 
     def _get_obs(self):
         """

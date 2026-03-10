@@ -5,5 +5,14 @@
     "generation_hidden_size" : 64,
     "demand_hidden_size" : 64,
     "num_households" : 1,
-    "episode_length" : 30
+    "episode_length" : 30,
+    "agent_cfg":{
+        "max_solar_generation_kwh": 10,
+        "use_hr" : true,
+        "lr" : 1e-4,
+        "generation_hidden_size" : 64,
+        "demand_hidden_size" : 64,
+        "market_price_hidden_size" : 64,
+        "time_blocks": 24
+    }
 }
