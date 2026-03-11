@@ -56,8 +56,6 @@ if __name__ == "__main__":
         .environment(
             env="P2P_env",
             env_config=env_config,
-            normalize_actions=False,
-            clip_actions=False,
         )
         .framework("torch")
         .rl_module(rl_module_spec=module_spec)

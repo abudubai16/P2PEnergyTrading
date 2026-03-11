@@ -74,6 +74,8 @@ class P2PTradingPolicy(TorchRLModule, ValueFunctionAPI):
             nn.Linear(decoder_input_size, 64), nn.ReLU(), nn.Linear(64, 1)
         )
 
+        self.log_std = nn.Parameter(torch.zeros(24))
+
     def _compute_embeddings(self, batch):
         obs: Dict[str, torch.Tensor] = batch.get(Columns.OBS, batch)
 
@@ -115,7 +117,8 @@ class P2PTradingPolicy(TorchRLModule, ValueFunctionAPI):
         # TODO : check if the values returned will be a numpy array or tensor
         embedding = self._compute_embeddings(batch)
         logits = self.decoder_layer(embedding)
-        logits = F.tanh(logits)
+        log_std = self.log_std.expand_as(logits)
+        logits = torch.cat([logits, log_std], dim=-1)
 
         return {Columns.ACTION_DIST_INPUTS: logits}
 
@@ -123,7 +126,8 @@ class P2PTradingPolicy(TorchRLModule, ValueFunctionAPI):
     def _forward_train(self, batch, **kwargs):
         embeddings = self._compute_embeddings(batch)
         logits: torch.Tensor = self.decoder_layer(embeddings)
-        logits = F.tanh(logits)
+        log_std = self.log_std.expand_as(logits)
+        logits = torch.cat([logits, log_std], dim=-1)
 
         return {
             Columns.ACTION_DIST_INPUTS: logits,

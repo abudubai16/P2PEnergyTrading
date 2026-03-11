@@ -87,8 +87,8 @@ class P2PEnergyTrading(MultiAgentEnv):
     def get_action_space(self, agent_id):
         T = REGULATIONS["time_blocks_per_day"]
         return Box(
-            low=-np.ones(shape=T) - 1,
-            high=+np.ones(shape=T) + 1,
+            low=-np.ones(shape=T),
+            high=+np.ones(shape=T),
             shape=(T,),
             dtype=np.float32,
         )
