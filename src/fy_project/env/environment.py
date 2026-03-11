@@ -86,15 +86,11 @@ class P2PEnergyTrading(MultiAgentEnv):
 
     def get_action_space(self, agent_id):
         T = REGULATIONS["time_blocks_per_day"]
-        return Dict(
-            {
-                "q_buy": Box(
-                    low=-np.ones(shape=T) - 1,
-                    high=+np.ones(shape=T) + 1,
-                    shape=(T,),
-                    dtype=np.float32,
-                ),
-            }
+        return Box(
+            low=-np.ones(shape=T) - 1,
+            high=+np.ones(shape=T) + 1,
+            shape=(T,),
+            dtype=np.float32,
         )
 
     def get_observation_space(self, agent_id):
@@ -110,7 +106,9 @@ class P2PEnergyTrading(MultiAgentEnv):
                 "battery_soc": Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
                 "battery_capacity": Box(
                     low=0.0,
-                    high=self.batteries[agent_id].capacity_kwh,
+                    high=self.batteries[
+                        agent_id
+                    ].capacity_kwh,  # TODO: scale this by some factor
                     shape=(1,),
                     dtype=np.float32,
                 ),
@@ -255,7 +253,7 @@ class P2PEnergyTrading(MultiAgentEnv):
         )
 
         for i, agent in enumerate(self.agents):
-            q_buy: np.ndarray = action_dist[agent]["q_buy"]
+            q_buy: np.ndarray = action_dist[agent]
             agent_demand = self.demand_model[i].get_daily_profile(
                 day_of_week=prev_day.weekday(),
                 day_of_year=prev_day.timetuple().tm_yday,

@@ -3,6 +3,7 @@ from ray.rllib.core.rl_module.torch.torch_rl_module import TorchRLModule
 from ray.rllib.utils.annotations import override
 from ray.rllib.core import Columns
 from ray.rllib.core.rl_module.apis import ValueFunctionAPI
+from ray.rllib.core.distribution.torch.torch_distribution import TorchDiagGaussian
 
 # pytorch modules
 import torch
@@ -34,21 +35,24 @@ class P2PTradingPolicy(TorchRLModule, ValueFunctionAPI):
         at T: battery_soc, battery_capacity, forecast_demand
         at T+1: generation_forecast
         """
+        super().setup()
+        self.action_dist_cls = TorchDiagGaussian
+
         self.time_blocks: int = self.model_config.get("time_blocks")
         self.demand_layer = nn.LSTM(
-            input_size=self.time_blocks,
+            input_size=1,
             hidden_size=self.model_config.get("demand_hidden_size"),
             num_layers=2,
             batch_first=True,
         )
         self.generation_layer = nn.LSTM(
-            input_size=self.time_blocks,
+            input_size=1,
             hidden_size=self.model_config.get("generation_hidden_size"),
             num_layers=2,
             batch_first=True,
         )
         self.market_price_layer = nn.LSTM(
-            input_size=self.time_blocks,
+            input_size=1,
             hidden_size=self.model_config.get("market_price_hidden_size"),
             num_layers=2,
             batch_first=True,
@@ -103,13 +107,15 @@ class P2PTradingPolicy(TorchRLModule, ValueFunctionAPI):
         return embeds
 
     def _return_last_timestep(self, layer: nn.LSTM, obs: torch.Tensor) -> torch.Tensor:
-        return layer(obs)[1][0][-1].unsqueeze(0)
+        _, (h_n, _) = layer(obs.unsqueeze(-1))
+        return h_n[-1]
 
     @override(TorchRLModule)
     def _forward(self, batch, **kwargs):
         # TODO : check if the values returned will be a numpy array or tensor
         embedding = self._compute_embeddings(batch)
         logits = self.decoder_layer(embedding)
+        logits = F.tanh(logits)
 
         return {Columns.ACTION_DIST_INPUTS: logits}
 
@@ -117,6 +123,8 @@ class P2PTradingPolicy(TorchRLModule, ValueFunctionAPI):
     def _forward_train(self, batch, **kwargs):
         embeddings = self._compute_embeddings(batch)
         logits: torch.Tensor = self.decoder_layer(embeddings)
+        logits = F.tanh(logits)
+
         return {
             Columns.ACTION_DIST_INPUTS: logits,
             Columns.EMBEDDINGS: embeddings,
@@ -127,4 +135,5 @@ class P2PTradingPolicy(TorchRLModule, ValueFunctionAPI):
         if embeddings is None:
             embeddings = self._compute_embeddings(batch)
         value = self.value_layer(embeddings)
+
         return value
