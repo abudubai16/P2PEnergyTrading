@@ -136,7 +136,7 @@ class P2PEnergyTrading(MultiAgentEnv):
         """
         obs = {}
 
-        day_offset = np.random.randint(1, 701)
+        day_offset = np.random.randint(1, 700)
         self.start_date = datetime(2024, 1, 1) + timedelta(days=day_offset)
         self.date = self.start_date
         self.market.reset(start_date=self.date - timedelta(days=1))
@@ -175,8 +175,12 @@ class P2PEnergyTrading(MultiAgentEnv):
         """
         Each step is one day
         One episode is 30 days (configurable)
+
+        Info:
+        - Net energy draw from the grid
+        - Cost to households for the day
         """
-        self.info = {}
+        self.info = {k: {} for k in self.agents}
 
         # Check if action is valid for each agent
         self._action_check_validity(action_dist)
@@ -193,7 +197,7 @@ class P2PEnergyTrading(MultiAgentEnv):
         # Check if the year span has been exceeded
         terminateds = {"__all__": (self.date - self.start_date).days > self.EPISODE_LEN}
 
-        return obs, rewards, terminateds, self.info, {}
+        return obs, rewards, terminateds, {}, self.info
 
     def _get_obs(self):
         """
@@ -253,7 +257,11 @@ class P2PEnergyTrading(MultiAgentEnv):
         )
 
         for i, agent in enumerate(self.agents):
-            q_buy: np.ndarray = action_dist[agent]
+            agent_info = {}
+            q_buy: np.ndarray = (
+                action_dist[agent] * REGULATIONS["max_transaction_kwh"]
+            )  # Scale the action to actual kWh values
+
             agent_demand = self.demand_model[i].get_daily_profile(
                 day_of_week=prev_day.weekday(),
                 day_of_year=prev_day.timetuple().tm_yday,
@@ -266,14 +274,17 @@ class P2PEnergyTrading(MultiAgentEnv):
 
             # Charge the batteries and calculate the remaining leftover energy that needs to be bought/sold from the grid
             battery_flow = []
+            soc = []
             for t in range(REGULATIONS["time_blocks_per_day"]):
                 battery_flow.append(
                     self.batteries[i].charge(net_before_battery[t])
                     if net_before_battery[t] > 0
                     else -self.batteries[i].discharge(-net_before_battery[t])
                 )
+                soc.append(self.batteries[i].soc)
 
             battery_flow = np.array(battery_flow)
+            soc = np.array(soc)
             Et = (
                 net_before_battery - battery_flow
             )  # Amnt to buy/sell from grid after battery flow
@@ -287,9 +298,25 @@ class P2PEnergyTrading(MultiAgentEnv):
                     -Et * 0.8,  # selling surplus
                 )
             )
+
             R_economic = -C_dam - C_imbalance
 
             R_deviation = -RL_CONST["imbalance_penalty_rate"] * np.sum(np.abs(Et))
             rewards[agent] = R_economic + R_deviation
+
+            ##### LOGGING INFO FOR ANALYSIS #####
+            agent_info["DAM_Energy_Bought"] = np.sum(np.where(q_buy > 0, q_buy, 0))
+            agent_info["DAM_Energy_Sold"] = np.sum(np.where(q_buy < 0, -q_buy, 0))
+            agent_info["Net_Grid_import"] = np.sum(np.where(Et > 0, Et, 0))
+            agent_info["Net_Grid_export"] = np.sum(np.where(Et < 0, -Et, 0))
+            agent_info["Net_before_Battery"] = net_before_battery
+            agent_info["Avg_Battery_SOC"] = np.average(soc)
+            agent_info["Std_Battery_SOC"] = np.std(soc)
+
+            agent_info["Transaction_Cost"] = C_dam
+            agent_info["Imbalance_Cost"] = C_imbalance
+            agent_info["Reward"] = rewards[agent]
+
+            self.info[agent] = agent_info
 
         return rewards

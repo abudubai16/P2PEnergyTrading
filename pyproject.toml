@@ -13,6 +13,7 @@ dependencies = [
     "torch>=2.2",
     "ray[rllib]>=2.9",
     "gymnasium>=0.29",
+    "tensorboard",
     "numpy",
     "pandas",
 ]
