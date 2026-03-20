@@ -16,6 +16,7 @@ dependencies = [
     "tensorboard",
     "numpy",
     "pandas",
+    "wandb",
 ]
 
 [tool.hatch.build.targets.wheel]

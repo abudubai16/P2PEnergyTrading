@@ -4,8 +4,8 @@
     "lr" : 1e-4,
     "generation_hidden_size" : 64,
     "demand_hidden_size" : 64,
-    "num_households" : 1,
-    "num_agents": 1,
+    "num_households" : 2,
+    "num_agents": 2,
     "episode_length" : 30,
     "agent_cfg":{
         "max_solar_generation_kwh": 10,
