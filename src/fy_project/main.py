@@ -18,8 +18,7 @@ from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.algorithms.algorithm import Algorithm
 from ray.rllib.core.rl_module import RLModuleSpec, MultiRLModuleSpec, RLModule
 
-# Testing imports
-from ray import tune
+# Ray Tune imports
 from ray.tune import Tuner
 from ray.air import RunConfig, CheckpointConfig
 from ray.air.integrations.wandb import WandbLoggerCallback
@@ -29,22 +28,26 @@ logger = logging.getLogger("ray.rllib")
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 
+with open(Path.joinpath(CONFIG_DIR, "env_config.json"), "r") as f:
+    env_config = json.load(f)
+    agent_cfg = env_config["agent_cfg"]
+
+
+def register_custom_env(env_class=P2PEnergyTradingAuction):
+    def env_creator(cfg):
+        return env_class(**cfg)
+
+    # Register the env with RLlib
+    register_env("P2P_env", env_creator)
+
+
 def train(
     env_class=P2PEnergyTrading,
     policy_class: RLModule = P2PTradingPolicy,
     debug: bool = False,
     use_tuner: bool = False,
 ):
-    def env_creator(cfg):
-        return env_class(**cfg)
-
-    # Load config files
-    with open(Path.joinpath(CONFIG_DIR, "env_config.json"), "r") as f:
-        env_config = json.load(f)
-        agent_cfg = env_config["agent_cfg"]
-
-    # Register the env with RLlib
-    register_env("P2P_env", env_creator)
+    register_custom_env(env_class)
 
     # Get the observation and action spaces from the environment
     temp_env = env_class(**env_config)
@@ -92,7 +95,7 @@ def train(
             param_space=config,
             run_config=RunConfig(
                 name="p2p_energy_experiment",
-                stop={"training_iteration": 1},
+                stop={"training_iteration": 200},
                 callbacks=[
                     WandbLoggerCallback(
                         project="p2p-energy-market",
