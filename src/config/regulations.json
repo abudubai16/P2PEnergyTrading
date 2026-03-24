@@ -8,7 +8,11 @@
     "deviation_settlement_enabled": true,
     "allow_peer_to_peer": true,
     "time_blocks_per_day": 24,
-
+    "solar_generation_config":{
+        "GHI_ratio":0.00085,
+        "capacities":[0, 2, 3, 5, 8],
+        "probs":[0.6, 0.1, 0.15, 0.1, 0.05]
+    },
     "demand_config" : {
         "daily_profile": [
         0.35, 0.32, 0.30, 0.28, 0.30,

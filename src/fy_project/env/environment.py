@@ -18,18 +18,6 @@ import json
 from pathlib import Path
 from datetime import datetime, timedelta
 
-# https://docs.ray.io/en/latest/rllib/multi-agent-envs.html#rllib-multi-agent-environments-doc
-
-"""
-    Env-> 
-    - time (0-23) - Done
-    - market_price - Done
-    - cloud_forecast -> generation scaled from cloud cover  - Done
-    - battery_soc -> capacity + state of charge - Done
-    - double auction logic 
-    - Indian tariffs and other regulatory constraints and logic - Done
-    - Demand prediction - Done
-"""
 
 # Indian regulations and tariffs
 with open(Path.joinpath(CONFIG_DIR, "regulations.json"), "r") as f:
@@ -38,6 +26,7 @@ with open(Path.joinpath(CONFIG_DIR, "regulations.json"), "r") as f:
     BATTERY_CFG = REGULATIONS["battery_config"]
     DAILY_PROFILE = np.array(DEMAND_CFG["daily_profile"], dtype=np.float32)
     RL_CONST = REGULATIONS["rl_const"]
+    GENERATION_CFG = REGULATIONS["solar_generation_config"]
 
 
 class P2PEnergyTrading(MultiAgentEnv):
@@ -344,13 +333,13 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
 
     def __init__(self, *args, **kwargs):
         super().__init__()
-        self.SOLAR_CONST: float = 1 / 20000
-        self.max_solar_gen: float = kwargs.get("max_solar_generation_kwh")
+        self.GHI_SCALING: float = 1 / 1500
+        # 0.0085 for Pmax*GHI/1000 * 0.85, 0.85 if to account for random losses
+        self.GHI_RATIO: float = GENERATION_CFG["GHI_ratio"]
         self.EPISODE_LEN: int = kwargs.get("episode_length", 30)
 
         self.TIME_DEL = timedelta(days=1)
         self.agents = [f"household_{i}" for i in range(kwargs["num_households"])]
-        print(f"\n\nAgents : {self.agents} \n\n\n\n\n")
         self._create_agents()
 
         """
@@ -377,7 +366,8 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
         self.demand_model = [HouseholdDemand() for _ in self.agents]
         self.batteries = [Battery() for _ in self.agents]
         self.agent_solar = [
-            np.random.uniform(0, self.max_solar_gen) for _ in self.agents
+            np.random.choice(GENERATION_CFG["capacities"], p=GENERATION_CFG["probs"])
+            for _ in self.agents
         ]
 
     def get_action_space(self, agent_id):
@@ -443,13 +433,9 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
         self.prev_market_val = self.market.get_day_values(self.date - timedelta(days=1))
         self.curr_market_val = self.market.get_day_values(self.date)
 
-        # Next days generation forecast based on cloud cover
+        # Next days generation forecast based on cloud cover, scaled down
         self.generation_forecast = (
-            np.array(
-                self.weather.get_day_ghi(self.date + timedelta(days=1)),
-                dtype=np.float32,
-            )
-            * self.SOLAR_CONST
+            self.weather.get_day_ghi(self.date + timedelta(days=1)) * self.GHI_SCALING
         )
 
         for i, agent in enumerate(self.agents):
@@ -474,6 +460,7 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
         - Net energy draw from the grid
         - Cost to households for the day
         """
+        self._values = {k: {} for k in self.agents}
         self.info = {k: {} for k in self.agents}
 
         # Check if action is valid for each agent
@@ -505,13 +492,9 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
         # get prev days market price and generation forecast for obs
         self.prev_market_val = self.curr_market_val
         self.curr_market_val = self.market.get_day_values(self.date)
-        # Next days generation forecast based on cloud cover
+        # Next days generation forecast based on cloud cover, scaled down
         self.generation_forecast = (
-            np.array(
-                self.weather.get_day_ghi(self.date + timedelta(days=1)),
-                dtype=np.float32,
-            )
-            * self.SOLAR_CONST
+            self.weather.get_day_ghi(self.date + timedelta(days=1)) * self.GHI_SCALING
         )
 
         for i, agent in enumerate(self.agents):
@@ -542,13 +525,7 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
         prev_day = self.date - timedelta(days=2)
 
         # Get the prev days generation for reward calculation
-        generation_forecast = (
-            np.array(
-                self.weather.get_day_ghi(self.date),
-                dtype=np.float32,
-            )
-            * self.SOLAR_CONST
-        )
+        generation_forecast = self.weather.get_day_ghi(self.date) * self.GHI_RATIO
 
         # Update q_buy based on auction clearing price
         ####################################################
@@ -602,8 +579,8 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
                 net_before_battery - battery_flow
             )  # Amnt to buy/sell from grid after battery flow
 
-            C_dam = np.sum(self.curr_market_val.get("price") * q_buy)
-            C_imbalance = np.sum(
+            C_dam: np.float64 = np.sum(self.curr_market_val.get("price") * q_buy)
+            C_imbalance: np.float64 = np.sum(
                 self.curr_market_val.get("price")
                 * np.where(
                     Et < 0,
@@ -613,11 +590,25 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
             )
 
             # Reward calculations
-            R_economic = -C_dam - C_imbalance
-            R_deviation = -RL_CONST["imbalance_penalty_rate"] * np.sum(np.abs(Et))
+            R_economic: np.float64 = -C_dam - C_imbalance
+            R_deviation: np.float64 = -RL_CONST["imbalance_penalty_rate"] * np.sum(
+                np.abs(Et)
+            )
             rewards[agent] = R_economic + R_deviation
-
+            ##### Storing intermediate values #####
+            self._values[agent] = {
+                "q_buy": q_buy,
+                "agent_demand": agent_demand,
+                "Grid_exchange": Et,
+                "Market_price": self.curr_market_val.get("price"),
+                "generation_forecast": generation_forecast * self.agent_solar[i],
+            }
             ##### LOGGING INFO FOR ANALYSIS #####
+            # agent_info["q_buy"] = q_buy
+            # agent_info["agent_demand"] = agent_demand
+            # agent_info["Grid_exchange"] = Et
+            # agent_info["Market_price"] = self.curr_market_val.get("price")
+
             agent_info["Market_execution_rate"] = np.sum(q_buy != 0) / len(q_buy)
 
             agent_info["Generated_energy"] = np.sum(
@@ -628,7 +619,7 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
             agent_info["DAM_Energy_Sold"] = np.sum(np.where(q_buy < 0, -q_buy, 0))
             agent_info["Net_Grid_import"] = np.sum(np.where(Et > 0, Et, 0))
             agent_info["Net_Grid_export"] = np.sum(np.where(Et < 0, -Et, 0))
-            agent_info["Net_before_Battery"] = net_before_battery
+            agent_info["Net_before_Battery"] = np.sum(net_before_battery)
             agent_info["Avg_Battery_SOC"] = np.average(soc)
             agent_info["Std_Battery_SOC"] = np.std(soc)
 

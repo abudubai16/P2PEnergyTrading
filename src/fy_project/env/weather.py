@@ -1,15 +1,19 @@
 import json
 import requests
-from typing import Tuple, List
+from typing import Tuple
 from pathlib import Path
 from datetime import datetime
+
+import numpy as np
+
+from fy_project.paths import WEATHER_DATA_DIR
 
 
 # Tested
 class Weather:
     BASE_URL = "https://power.larc.nasa.gov/api/temporal/hourly/point"
 
-    def __init__(self, city, lat, lon, cache_dir="src/weather_cache"):
+    def __init__(self, city, lat, lon, cache_dir=WEATHER_DATA_DIR):
         self.city = city.replace(" ", "_")
         self.lat = lat
         self.lon = lon
@@ -101,8 +105,8 @@ class Weather:
         entry = self._year_data[key]
         return entry["temp"], entry["ghi"]
 
-    def get_day_ghi(self, dt: datetime) -> List[float]:
+    def get_day_ghi(self, dt: datetime) -> np.ndarray:
         year = dt.year
         self._ensure_year_loaded(year)
         day_ghi = [self.get_weather(dt.replace(hour=h))[1] for h in range(24)]
-        return day_ghi
+        return np.array(day_ghi, dtype=np.float32)

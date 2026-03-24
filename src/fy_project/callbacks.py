@@ -2,6 +2,9 @@ import numpy as np
 
 import wandb
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
+from ray.air.integrations.wandb import WandbLoggerCallback
+
+from ray.rllib.env.multi_agent_episode import MultiAgentEpisode
 
 
 class EnergyLoggerCallbacks(DefaultCallbacks):
@@ -24,14 +27,14 @@ class EnergyLoggerCallbacks(DefaultCallbacks):
                 metrics_logger.log_value(metric_name, value, reduce="mean")
 
 
-# TODO - Finish implementation of this class to log metrics to wandb
 class EnergyLoggerCallbacksWandb(DefaultCallbacks):
 
     def on_episode_start(self, *, episode, **kwargs):
         # Storage for accumulating metrics
-        episode._agent_metric_buffer = {}
+        self._agent_metric_buffer = {}
 
-    def on_episode_step(self, *, episode, **kwargs):
+    # -------- STEP COLLECTION -------- #
+    def on_episode_step(self, *, episode: MultiAgentEpisode, **kwargs):
 
         infos = episode.get_infos()
         if not infos:
@@ -41,12 +44,11 @@ class EnergyLoggerCallbacksWandb(DefaultCallbacks):
             if not agent_infos:
                 continue
 
-            # Get latest info safely
             info = agent_infos[-1] if isinstance(agent_infos, list) else agent_infos
 
             # Initialize agent buffer if needed
-            if agent_id not in episode._agent_metric_buffer:
-                episode._agent_metric_buffer[agent_id] = {}
+            if agent_id not in self._agent_metric_buffer:
+                self._agent_metric_buffer[agent_id] = {}
 
             for key, value in info.items():
 
@@ -54,26 +56,23 @@ class EnergyLoggerCallbacksWandb(DefaultCallbacks):
                 if not isinstance(value, (int, float, np.number)):
                     continue
 
-                if key not in episode._agent_metric_buffer[agent_id]:
-                    episode._agent_metric_buffer[agent_id][key] = []
+                if key not in self._agent_metric_buffer[agent_id]:
+                    self._agent_metric_buffer[agent_id][key] = []
 
-                episode._agent_metric_buffer[agent_id][key].append(value)
+                self._agent_metric_buffer[agent_id][key].append(value)
 
     def on_episode_end(self, *, episode, metrics_logger, **kwargs):
 
-        if not hasattr(episode, "_agent_metric_buffer"):
+        if not hasattr(self, "_agent_metric_buffer"):
             return
 
-        for agent_id, metrics in episode._agent_metric_buffer.items():
-
+        for agent_id, metrics in self._agent_metric_buffer.items():
             for key, values in metrics.items():
-
-                if len(values) == 0:
+                if len(values) == 0 or "household" not in key:
                     continue
 
                 metric_name = f"{agent_id}/{key}"
 
-                # Aggregate (mean over episode)
                 metrics_logger.log_value(
                     metric_name,
                     float(np.mean(values)),
