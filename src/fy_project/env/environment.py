@@ -336,6 +336,8 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
         self.GHI_SCALING: float = 1 / 1500
         # 0.0085 for Pmax*GHI/1000 * 0.85, 0.85 if to account for random losses
         self.GHI_RATIO: float = GENERATION_CFG["GHI_ratio"]
+        self.BATTERY_SCALING: float = 1 / BATTERY_CFG["capacity_kwh"]["max"]
+        self.MAX_GENERATION: np.float32 = np.array(GENERATION_CFG["capacities"]).max()
         self.EPISODE_LEN: int = kwargs.get("episode_length", 30)
 
         self.TIME_DEL = timedelta(days=1)
@@ -392,15 +394,13 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
                 "battery_soc": Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
                 "battery_capacity": Box(
                     low=0.0,
-                    high=self.batteries[
-                        agent_id
-                    ].capacity_kwh,  # TODO: scale this by some factor
+                    high=1.0,
                     shape=(1,),
                     dtype=np.float32,
                 ),
                 "forecast_demand": Box(
                     low=np.zeros(T, dtype=np.float32),
-                    high=DAILY_PROFILE,
+                    high=np.ones(T, dtype=np.float32),
                     shape=(T,),
                     dtype=np.float32,
                 ),
@@ -408,6 +408,12 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
                     low=np.zeros(T, dtype=np.float32),
                     high=np.ones(T, dtype=np.float32),
                     shape=(T,),
+                    dtype=np.float32,
+                ),
+                "generation_cap": Box(
+                    low=0.0,
+                    high=1.0,
+                    shape=(1,),
                     dtype=np.float32,
                 ),
             }
@@ -443,10 +449,14 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
                 "market_price": self.prev_market_val.get("price") / 11,
                 "battery_soc": np.array([self.batteries[i].soc], dtype=np.float32),
                 "battery_capacity": np.array(
-                    [self.batteries[i].capacity_kwh], dtype=np.float32
+                    [self.batteries[i].capacity_kwh * self.BATTERY_SCALING],
+                    dtype=np.float32,
                 ),
                 "forecast_demand": DAILY_PROFILE * self.demand_model[i].house_scale / 2,
                 "generation": self.generation_forecast * self.agent_solar[i],
+                "generation_cap": np.array(
+                    [self.agent_solar[i] / self.MAX_GENERATION], dtype=np.float32
+                ),
             }
 
         return obs, {}
@@ -502,10 +512,14 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
                 "market_price": self.prev_market_val.get("price") / 11,
                 "battery_soc": np.array([self.batteries[i].soc], dtype=np.float32),
                 "battery_capacity": np.array(
-                    [self.batteries[i].capacity_kwh], dtype=np.float32
+                    [self.batteries[i].capacity_kwh * self.BATTERY_SCALING],
+                    dtype=np.float32,
                 ),
                 "forecast_demand": DAILY_PROFILE * self.demand_model[i].house_scale / 2,
                 "generation": self.generation_forecast * self.agent_solar[i],
+                "generation_cap": np.array(
+                    [self.agent_solar[i] / self.MAX_GENERATION], dtype=np.float32
+                ),
             }
 
         return obs

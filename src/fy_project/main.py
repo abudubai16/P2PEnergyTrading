@@ -32,6 +32,8 @@ with open(Path.joinpath(CONFIG_DIR, "env_config.json"), "r") as f:
     env_config = json.load(f)
     agent_cfg = env_config["agent_cfg"]
 
+CPU_COUNT = os.cpu_count()
+
 
 def register_custom_env(env_class=P2PEnergyTradingAuction):
     def env_creator(cfg):
@@ -82,7 +84,7 @@ def train(
             policies={"shared_policy"},
             policy_mapping_fn=lambda agent_id, *args, **kwargs: "shared_policy",
         )
-        .env_runners(num_env_runners=6, num_envs_per_env_runner=1)
+        .env_runners(num_env_runners=CPU_COUNT - 1, num_envs_per_env_runner=1)
     )
 
     if debug:
@@ -129,6 +131,6 @@ if __name__ == "__main__":
     train(
         env_class=P2PEnergyTradingAuction,
         policy_class=P2PTradingPolicyAuction,
-        debug=False,
-        use_tuner=True,
+        debug=True,
+        use_tuner=False,
     )

@@ -188,7 +188,7 @@ class P2PTradingPolicyAuction(TorchRLModule, ValueFunctionAPI):
             batch_first=True,
         )
         self.encoder_layer = nn.Sequential(
-            nn.Linear(2, 64), nn.ReLU(), nn.Linear(64, 64)
+            nn.Linear(3, 64), nn.ReLU(), nn.Linear(64, 64)
         )
 
         decoder_input_size = (
@@ -218,6 +218,7 @@ class P2PTradingPolicyAuction(TorchRLModule, ValueFunctionAPI):
             (
                 obs["battery_soc"],
                 obs["battery_capacity"],
+                obs["generation_cap"],
             ),
             dim=-1,
         )
