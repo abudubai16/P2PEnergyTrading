@@ -1,15 +1,7 @@
 import numpy as np
 
-import json
-from pathlib import Path
 
-from fy_project.paths import CONFIG_DIR
-
-
-with open(Path.joinpath(CONFIG_DIR, "regulations.json"), "r") as f:
-    REGULATIONS = json.load(f)
-    DEMAND_CFG = REGULATIONS["demand_config"]
-    DAILY_PROFILE = np.array(DEMAND_CFG["daily_profile"])
+from fy_project.paths import DEMAND_CFG
 
 
 # Tested

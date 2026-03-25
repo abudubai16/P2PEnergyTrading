@@ -8,7 +8,6 @@ from ray.rllib.core.distribution.torch.torch_distribution import TorchDiagGaussi
 # pytorch modules
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from typing import Dict
 

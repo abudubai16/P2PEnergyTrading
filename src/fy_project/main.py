@@ -1,15 +1,13 @@
 # module imports
 from fy_project.env import P2PEnergyTrading, P2PEnergyTradingAuction
 from fy_project.agent import P2PTradingPolicy, P2PTradingPolicyAuction
-from fy_project.callbacks import EnergyLoggerCallbacks, EnergyLoggerCallbacksWandb
-from fy_project.paths import CONFIG_DIR, CHECKPOINT_DIR
+from fy_project.callbacks import EnergyLoggerCallbacksWandb
+from fy_project.paths import ENV_CFG, AGENT_CFG
 
 # internal imports
 import os
-import json
 import logging
 import warnings
-from pathlib import Path
 
 # RLlib imports
 import ray
@@ -28,10 +26,6 @@ logger = logging.getLogger("ray.rllib")
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 
-with open(Path.joinpath(CONFIG_DIR, "env_config.json"), "r") as f:
-    env_config = json.load(f)
-    agent_cfg = env_config["agent_cfg"]
-
 CPU_COUNT = os.cpu_count()
 
 
@@ -40,7 +34,7 @@ def register_custom_env(env_class=P2PEnergyTradingAuction):
         return env_class(**cfg)
 
     # Register the env with RLlib
-    register_env("P2P_env", env_creator)
+    register_env("P2P_env_auction", env_creator)
 
 
 def train(
@@ -49,10 +43,10 @@ def train(
     debug: bool = False,
     use_tuner: bool = False,
 ):
-    register_custom_env(env_class)
+    env_name = "P2P_env_auction" if env_class == P2PEnergyTradingAuction else "P2P_env"
 
     # Get the observation and action spaces from the environment
-    temp_env = env_class(**env_config)
+    temp_env = env_class(**ENV_CFG)
     observation_space = temp_env.get_observation_space(0)
     action_space = temp_env.get_action_space(0)
     del temp_env
@@ -64,7 +58,7 @@ def train(
                 module_class=policy_class,
                 observation_space=observation_space,
                 action_space=action_space,
-                model_config=agent_cfg,
+                model_config=AGENT_CFG,
             )
         }
     )
@@ -73,8 +67,8 @@ def train(
     config = (
         PPOConfig()
         .environment(
-            env="P2P_env",
-            env_config=env_config,
+            env=env_name,
+            env_config=ENV_CFG,
         )
         .training(train_batch_size=512)
         .callbacks(EnergyLoggerCallbacksWandb)
@@ -101,7 +95,7 @@ def train(
                 callbacks=[
                     WandbLoggerCallback(
                         project="p2p-energy-market",
-                        name="ppo-run-testing",
+                        name="ppo-run-training-1",
                         config=config.to_dict(),
                         sync_tensorboard=True,
                     )

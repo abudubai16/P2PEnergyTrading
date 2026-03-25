@@ -1,13 +1,6 @@
 import numpy as np
 
-import json
-from pathlib import Path
-
-from fy_project.paths import CONFIG_DIR
-
-with open(Path.joinpath(CONFIG_DIR, "regulations.json"), "r") as f:
-    REGULATIONS = json.load(f)
-    BATTERY_CFG = REGULATIONS["battery_config"]
+from fy_project.paths import BATTERY_CFG
 
 
 # Tested

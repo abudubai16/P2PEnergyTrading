@@ -1,9 +1,6 @@
 import numpy as np
 
-import wandb
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
-from ray.air.integrations.wandb import WandbLoggerCallback
-
 from ray.rllib.env.multi_agent_episode import MultiAgentEpisode
 
 

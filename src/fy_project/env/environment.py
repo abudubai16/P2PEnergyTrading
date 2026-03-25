@@ -1,32 +1,26 @@
 # RL libraries
-from gymnasium.spaces import Box, Dict, Text
+from gymnasium.spaces import Box, Dict
+from ray.tune.registry import register_env
 from ray.rllib.env.multi_agent_env import MultiAgentEnv
 
 # Math + ML libraries
 import numpy as np
-import torch
 
 # Relative imports
-from fy_project.paths import CONFIG_DIR
+from fy_project.paths import (
+    REGULATIONS,
+    BATTERY_CFG,
+    DAILY_PROFILE,
+    RL_CONST,
+    GENERATION_CFG,
+)
+from .weather import Weather
 from .battery import Battery
 from .demand import HouseholdDemand
 from .market import IEXMarket, IEXMarketV2, AuctionMarket
-from .weather import Weather
 
 # Frist party libraries
-import json
-from pathlib import Path
 from datetime import datetime, timedelta
-
-
-# Indian regulations and tariffs
-with open(Path.joinpath(CONFIG_DIR, "regulations.json"), "r") as f:
-    REGULATIONS = json.load(f)
-    DEMAND_CFG = REGULATIONS["demand_config"]
-    BATTERY_CFG = REGULATIONS["battery_config"]
-    DAILY_PROFILE = np.array(DEMAND_CFG["daily_profile"], dtype=np.float32)
-    RL_CONST = REGULATIONS["rl_const"]
-    GENERATION_CFG = REGULATIONS["solar_generation_config"]
 
 
 class P2PEnergyTrading(MultiAgentEnv):
@@ -375,8 +369,8 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
     def get_action_space(self, agent_id):
         T = REGULATIONS["time_blocks_per_day"]
         return Box(
-            low=-np.ones(shape=2 * T),
-            high=+np.ones(shape=2 * T),
+            low=-np.ones(shape=2 * T, dtype=np.float32),
+            high=+np.ones(shape=2 * T, dtype=np.float32),
             shape=(2 * T,),
             dtype=np.float32,
         )
@@ -644,3 +638,18 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
             self.info[agent] = agent_info
 
         return rewards
+
+
+# Registering the envs so that they can be called by name in the config
+
+
+def p2p_env_creator(cfg):
+    return P2PEnergyTrading(**cfg)
+
+
+def p2p_env_auction_creator(cfg):
+    return P2PEnergyTradingAuction(**cfg)
+
+
+register_env("P2P_env", p2p_env_creator)
+register_env("P2P_env_auction", p2p_env_auction_creator)
