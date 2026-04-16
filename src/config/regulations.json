@@ -65,6 +65,10 @@
     },
     
     "rl_const" : {
-        "imbalance_penalty_rate" : 0.4289621
+        "imbalance_penalty_rate" : 0.4289621,
+        "battery_penalty_rate" : 2.15,
+        "soc_min_threshold" : 1,
+        "competitiveness_penalty_rate" : 3.5,
+        "dam_rate" : 0.08
     }
 }

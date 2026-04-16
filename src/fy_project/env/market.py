@@ -72,13 +72,16 @@ class IEXMarketV2:
         print(IEX_DATA_DIR2)
 
     def reset(self, start_date=datetime(2024, 1, 1)) -> None:
-        if start_date == datetime(2024, 1, 1):
-            return
-
-        self.reader = csv.DictReader(open(IEX_DATA_DIR2, "r"))
+        if hasattr(self, "_file_handle") and self._file_handle:
+            self._file_handle.close()
+        self._file_handle = open(IEX_DATA_DIR2, "r")
+        self.reader = csv.DictReader(self._file_handle)
         self.start_date = (
             start_date - self.TIME_DEL
         )  # one behind behavior for next read
+
+        if start_date == datetime(2024, 1, 1):
+            return
 
         while True:
             try:
@@ -101,15 +104,23 @@ class IEXMarketV2:
 
         date_str = val["date"]
         if date_str != dt.strftime("%Y-%m-%d"):
-            raise IndexError(
+            print(
                 f"Expected datetime {dt} not found in IEX data. Got {date_str} instead."
             )
+            self.reset(dt)
+            print(self.start_date)
+            return self.get_day_values(dt)
+
         price = val.get("price")[1:-1].split(sep=",")
         volume = val.get("volume")[1:-1].split(sep=",")
         price = np.array([float(p) for p in price], dtype=np.float32) / 1000
         volume = np.array([float(v) for v in volume], dtype=np.float32)
 
         return {"price": price, "volume": volume}
+
+    def __delete__(self):
+        if self._file_handle:
+            self._file_handle.close()
 
 
 class AuctionMarket:

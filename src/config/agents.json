@@ -5,5 +5,6 @@
     "generation_hidden_size" : 64,
     "demand_hidden_size" : 64,
     "market_price_hidden_size" : 64,
-    "time_blocks": 24
+    "time_blocks": 24,
+    "common_hidden_size" : 192
 }

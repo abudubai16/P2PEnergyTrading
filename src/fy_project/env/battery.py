@@ -15,8 +15,8 @@ class Battery:
         self.max_discharge_kw = self._sample(BATTERY_CFG["max_discharge_power_kw"])
 
         # -------- Initial State of Charge --------
-        soc_low, soc_high = BATTERY_CFG["initial_soc_range"]
-        self.soc = np.random.uniform(soc_low, soc_high)
+        self.soc_low, self.soc_high = BATTERY_CFG["initial_soc_range"]
+        self.reset()
 
     def _sample(self, dist):
         val = np.random.normal(dist["mean"], dist["std"])
@@ -79,4 +79,4 @@ class Battery:
 
     def reset(self):
         # randomize initial SOC at new episode
-        self.soc = np.random.uniform(0.3, 0.8)
+        self.soc = np.random.uniform(self.soc_low, self.soc_high)

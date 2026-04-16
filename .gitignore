@@ -12,6 +12,7 @@ __pycache__/
 *.xls
 *2025.xlsx
 *2024.xlsx
+checkpoints/*
 
 # Distribution / packaging
 .Python

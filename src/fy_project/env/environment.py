@@ -5,6 +5,7 @@ from ray.rllib.env.multi_agent_env import MultiAgentEnv
 
 # Math + ML libraries
 import numpy as np
+import pandas as pd
 
 # Relative imports
 from fy_project.paths import (
@@ -20,7 +21,55 @@ from .demand import HouseholdDemand
 from .market import IEXMarket, IEXMarketV2, AuctionMarket
 
 # Frist party libraries
+from time import perf_counter
 from datetime import datetime, timedelta
+
+
+def get_observation_space(T: int):
+    return Dict(
+        {
+            "market_price": Box(
+                low=np.zeros(T, dtype=np.float32),
+                high=np.ones(T, dtype=np.float32),
+                shape=(T,),
+                dtype=np.float32,
+            ),
+            "battery_soc": Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
+            "battery_capacity": Box(
+                low=0.0,
+                high=1.0,
+                shape=(1,),
+                dtype=np.float32,
+            ),
+            "forecast_demand": Box(
+                low=np.zeros(T, dtype=np.float32),
+                high=np.ones(T, dtype=np.float32),
+                shape=(T,),
+                dtype=np.float32,
+            ),
+            "generation": Box(
+                low=np.zeros(T, dtype=np.float32),
+                high=np.ones(T, dtype=np.float32),
+                shape=(T,),
+                dtype=np.float32,
+            ),
+            "generation_cap": Box(
+                low=0.0,
+                high=1.0,
+                shape=(1,),
+                dtype=np.float32,
+            ),
+        }
+    )
+
+
+def get_action_space(T: int):
+    return Box(
+        low=-np.ones(shape=2 * T, dtype=np.float32),
+        high=+np.ones(shape=2 * T, dtype=np.float32),
+        shape=(2 * T,),
+        dtype=np.float32,
+    )
 
 
 class P2PEnergyTrading(MultiAgentEnv):
@@ -317,6 +366,7 @@ class P2PEnergyTrading(MultiAgentEnv):
         return rewards
 
 
+# Working code
 class P2PEnergyTradingAuction(MultiAgentEnv):
     """
     Custom env for P2P energy trading among households.
@@ -345,12 +395,12 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
                 o ~ [market_price, battery_soc, battery_capacity, forecast_demand, generation_forecast]
         """
         self.action_spaces = {
-            agent: self.get_action_space(agent_id)
+            agent: get_action_space(REGULATIONS["time_blocks_per_day"])
             for agent_id, agent in enumerate(self.agents)
         }
 
         self.observation_spaces = {
-            agent: self.get_observation_space(agent_id)
+            agent: get_observation_space(REGULATIONS["time_blocks_per_day"])
             for agent_id, agent in enumerate(self.agents)
         }
 
@@ -366,53 +416,6 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
             for _ in self.agents
         ]
 
-    def get_action_space(self, agent_id):
-        T = REGULATIONS["time_blocks_per_day"]
-        return Box(
-            low=-np.ones(shape=2 * T, dtype=np.float32),
-            high=+np.ones(shape=2 * T, dtype=np.float32),
-            shape=(2 * T,),
-            dtype=np.float32,
-        )
-
-    def get_observation_space(self, agent_id):
-        T = REGULATIONS["time_blocks_per_day"]
-        return Dict(
-            {
-                "market_price": Box(
-                    low=np.zeros(T, dtype=np.float32),
-                    high=np.ones(T, dtype=np.float32),
-                    shape=(T,),
-                    dtype=np.float32,
-                ),
-                "battery_soc": Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
-                "battery_capacity": Box(
-                    low=0.0,
-                    high=1.0,
-                    shape=(1,),
-                    dtype=np.float32,
-                ),
-                "forecast_demand": Box(
-                    low=np.zeros(T, dtype=np.float32),
-                    high=np.ones(T, dtype=np.float32),
-                    shape=(T,),
-                    dtype=np.float32,
-                ),
-                "generation": Box(
-                    low=np.zeros(T, dtype=np.float32),
-                    high=np.ones(T, dtype=np.float32),
-                    shape=(T,),
-                    dtype=np.float32,
-                ),
-                "generation_cap": Box(
-                    low=0.0,
-                    high=1.0,
-                    shape=(1,),
-                    dtype=np.float32,
-                ),
-            }
-        )
-
     def reset(self, *, seed=None, options=None):
         """
         Observations:
@@ -421,8 +424,10 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
         at T+1: generation_forecast
         """
         obs = {}
+        for battery in self.batteries:
+            battery.reset()
 
-        day_offset = np.random.randint(1, 700)
+        day_offset = np.random.randint(1, 695)
         self.start_date = datetime(2024, 1, 1) + timedelta(days=day_offset)
         self.date = self.start_date
         self.market.reset(start_date=self.date - timedelta(days=1))
@@ -568,28 +573,25 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
             # From load balancing equation: generation + q_buy = demand + q_charge_battery
             net_before_battery = (
                 generation_forecast * self.agent_solar[i] - agent_demand + q_buy
-            )
+            )  # Positive means more energy
 
             # Charge the batteries and calculate the remaining leftover energy that needs to be bought/sold from the grid
-            battery_flow = []
+            Et = []
             soc = []
             for t in range(REGULATIONS["time_blocks_per_day"]):
-                battery_flow.append(
+                Et.append(
                     self.batteries[i].charge(net_before_battery[t])
                     if net_before_battery[t] > 0
                     else -self.batteries[i].discharge(-net_before_battery[t])
                 )
                 soc.append(self.batteries[i].soc)
 
-            battery_flow = np.array(battery_flow)
+            Et = np.array(Et)  # Amnt to buy/sell from grid after battery flow
             soc = np.array(soc)
-            Et = (
-                net_before_battery - battery_flow
-            )  # Amnt to buy/sell from grid after battery flow
 
-            C_dam: np.float64 = np.sum(self.curr_market_val.get("price") * q_buy)
+            C_dam: np.float64 = np.sum(market_price * q_buy)
             C_imbalance: np.float64 = np.sum(
-                self.curr_market_val.get("price")
+                market_price
                 * np.where(
                     Et < 0,
                     -Et * 1.5,  # buying deficit (Et negative)
@@ -597,32 +599,44 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
                 )
             )
 
+            price_deviation = np.mean(np.abs(prices[agent] - market_price))
+            R_competitiveness = (
+                -RL_CONST["competitiveness_penalty_rate"] * price_deviation
+            )
+
+            R_battery = -RL_CONST["battery_penalty_rate"] * np.sum(
+                np.maximum(
+                    0, RL_CONST["soc_min_threshold"] - soc
+                )  # penalize going below e.g. 20%
+            )
+
             # Reward calculations
-            R_economic: np.float64 = -C_dam - C_imbalance
+            R_economic: np.float64 = (-C_dam - C_imbalance) * RL_CONST["dam_rate"]
             R_deviation: np.float64 = -RL_CONST["imbalance_penalty_rate"] * np.sum(
                 np.abs(Et)
             )
-            rewards[agent] = R_economic + R_deviation
+
+            rewards[agent] = R_competitiveness + R_deviation  # R_economic + R_battery +
+
             ##### Storing intermediate values #####
             self._values[agent] = {
                 "q_buy": q_buy,
                 "agent_demand": agent_demand,
                 "Grid_exchange": Et,
-                "Market_price": self.curr_market_val.get("price"),
+                "Market_price": market_price,
                 "generation_forecast": generation_forecast * self.agent_solar[i],
             }
+
             ##### LOGGING INFO FOR ANALYSIS #####
-            # agent_info["q_buy"] = q_buy
-            # agent_info["agent_demand"] = agent_demand
-            # agent_info["Grid_exchange"] = Et
-            # agent_info["Market_price"] = self.curr_market_val.get("price")
+            agent_info["Buying_diff"] = np.where(
+                quantities[agent] > 0, prices[agent] - market_price, 0
+            ).mean()
+            agent_info["Selling_diff"] = np.where(
+                quantities[agent] < 0, market_price - prices[agent], 0
+            ).mean()
+            agent_info["Gen_capacity"] = self.agent_solar[i]
 
             agent_info["Market_execution_rate"] = np.sum(q_buy != 0) / len(q_buy)
-
-            agent_info["Generated_energy"] = np.sum(
-                generation_forecast * self.agent_solar[i]
-            )
-            agent_info["Demand"] = np.sum(agent_demand)
             agent_info["DAM_Energy_Bought"] = np.sum(np.where(q_buy > 0, q_buy, 0))
             agent_info["DAM_Energy_Sold"] = np.sum(np.where(q_buy < 0, -q_buy, 0))
             agent_info["Net_Grid_import"] = np.sum(np.where(Et > 0, Et, 0))
@@ -630,9 +644,13 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
             agent_info["Net_before_Battery"] = np.sum(net_before_battery)
             agent_info["Avg_Battery_SOC"] = np.average(soc)
             agent_info["Std_Battery_SOC"] = np.std(soc)
+            agent_info["Q_Buy"] = np.where(q_buy > 0, q_buy, 0).sum()
+            agent_info["Q_Sell"] = np.where(q_buy < 0, -q_buy, 0).sum()
 
-            agent_info["Transaction_Cost"] = C_dam
-            agent_info["Imbalance_Cost"] = C_imbalance
+            agent_info["R_DAM"] = R_economic
+            agent_info["R_Imbalance"] = R_deviation
+            agent_info["R_Competitiveness"] = R_competitiveness
+            agent_info["R_Battery"] = R_battery
             agent_info["Reward"] = rewards[agent]
 
             self.info[agent] = agent_info
@@ -643,13 +661,8 @@ class P2PEnergyTradingAuction(MultiAgentEnv):
 # Registering the envs so that they can be called by name in the config
 
 
-def p2p_env_creator(cfg):
-    return P2PEnergyTrading(**cfg)
-
-
 def p2p_env_auction_creator(cfg):
     return P2PEnergyTradingAuction(**cfg)
 
 
-register_env("P2P_env", p2p_env_creator)
 register_env("P2P_env_auction", p2p_env_auction_creator)
